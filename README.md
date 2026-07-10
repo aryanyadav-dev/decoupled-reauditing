@@ -93,14 +93,5 @@ export DRA_PILOT_MODE=0
 python run_all.py
 ```
 
-## Paper Draft
 
-`research.tex` contains the current AAAI-style draft with:
-
-- the monitor-gaming setup,
-- the Decoupled Re-Auditing algorithm,
-- Proposition 1 and the pool-diversity bound,
-- GSM8K experimental design,
-- result tables and figure placeholders,
-- limitations and failure analysis.
 
