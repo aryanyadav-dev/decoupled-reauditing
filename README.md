@@ -19,7 +19,6 @@ Over each cycle, every verifier acts as a filter and as an auditor. A wrong trac
 
 ## Repository Map
 
-- `research.tex`: AAAI-style paper draft.
 - `decoupled_reauditing/config.py`: regimes, model ids, seeds, LoRA settings, generation limits, and probe size.
 - `decoupled_reauditing/verifiers/`: symbolic checker, LLM judge verifier, and self-consistency verifier.
 - `decoupled_reauditing/selftrain/`: sampling, filtering, re-auditing, LoRA fine-tuning, checkpoints, and schedule helpers.
