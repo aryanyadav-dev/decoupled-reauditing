@@ -7,7 +7,7 @@ bitsandbytes==0.43.3
 datasets==2.21.0
 pandas
 matplotlib
-numpy
+numpy==1.26.4
 tqdm
 scikit-learn
 huggingface_hub

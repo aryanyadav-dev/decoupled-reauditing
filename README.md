@@ -8,7 +8,7 @@ The project studies a failure mode in rejection-sampling self-training for reaso
 
 Naive self-training can make reported verifier accuracy rise while independent process-judge accuracy falls. Decoupled Re-Auditing should keep reported and true accuracy aligned when verifier blind spots are diverse.
 
-The core theorem in `research.tex` depends on the exact round-robin schedule implemented in code:
+The core theorem depends on the exact round-robin schedule implemented in code:
 
 ```text
 filter(t) = t % M
