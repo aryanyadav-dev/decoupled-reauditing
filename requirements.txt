@@ -3,7 +3,7 @@ transformers==4.44.2
 trl==0.9.6
 peft==0.12.0
 accelerate==0.33.0
-bitsandbytes==0.43.3
+bitsandbytes>=0.46.0
 datasets==2.21.0
 pandas
 matplotlib
