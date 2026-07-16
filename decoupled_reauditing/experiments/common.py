@@ -3,6 +3,8 @@ import json
 import time
 from pathlib import Path
 
+import torch
+
 from decoupled_reauditing import config
 from decoupled_reauditing.metrics import make_independent_judge
 from decoupled_reauditing.selftrain.loop import run_generation
@@ -52,10 +54,20 @@ def write_csv(path, fieldnames, rows):
 def run_real_experiment(mode, exp_name, csv_name):
     set_all_seeds(config.SEED)
     train, eval_ = load_splits()
-    policy, tokenizer = load_model(config.MODEL_ID, config.LOAD_IN_4BIT, padding_side="left")
-    llm, llm_tok = load_model(config.LLM_JUDGE_ID, config.LOAD_IN_4BIT)
+    
+    # Determine device placement based on available GPUs
+    num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
+    policy_device = 0
+    llm_judge_device = 0
+    independent_judge_device = 1 if num_gpus >= 2 else 0
+    
+    print(f"[run_real_experiment] GPUs available: {num_gpus}")
+    print(f"[run_real_experiment] policy -> cuda:{policy_device}, LLM-judge -> cuda:{llm_judge_device}, independent-judge -> cuda:{independent_judge_device}")
+    
+    policy, tokenizer = load_model(config.MODEL_ID, config.LOAD_IN_4BIT, padding_side="left", device_index=policy_device)
+    llm, llm_tok = load_model(config.LLM_JUDGE_ID, config.LOAD_IN_4BIT, device_index=llm_judge_device)
     pool = make_real_pool(llm, llm_tok)
-    judge = make_independent_judge()
+    judge = make_independent_judge(device_index=independent_judge_device)
     rows = []
     start = time.time()
     for t in range(config.NUM_GENERATIONS):

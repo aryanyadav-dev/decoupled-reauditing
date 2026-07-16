@@ -61,10 +61,16 @@ class MathShepherdJudge:
     model: object = None
     tokenizer: object = None
     threshold: float = config.PRM_THRESHOLD
+    device_index: int = 1  # Default to cuda:1 for independent judge
 
     def __post_init__(self):
         if self.model is None or self.tokenizer is None:
-            self.model, self.tokenizer = load_model(config.JUDGE_ID, config.LOAD_IN_4BIT)
+            # Fall back to cuda:0 if only one GPU is available
+            device_index = self.device_index
+            if torch.cuda.is_available() and torch.cuda.device_count() == 1:
+                print(f"[MathShepherdJudge] Only 1 GPU available, using cuda:0 (requested cuda:{device_index})")
+                device_index = 0
+            self.model, self.tokenizer = load_model(config.JUDGE_ID, config.LOAD_IN_4BIT, device_index=device_index)
         self.candidate_tokens, self.step_tag_id = resolve_prm_tokens(self.tokenizer)
         self.model.eval()
 

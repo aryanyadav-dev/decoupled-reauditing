@@ -27,9 +27,37 @@ def set_all_seeds(seed: int = config.SEED) -> None:
         torch.use_deterministic_algorithms(True)
 
 
-def load_model(model_id: str, load_in_4bit: bool = True, padding_side: str = "right"):
+def load_model(model_id: str, load_in_4bit: bool = True, padding_side: str = "right", device_index: Optional[int] = None):
+    """Load a model with optional device placement.
+    
+    Args:
+        model_id: HuggingFace model identifier
+        load_in_4bit: Whether to use 4-bit quantization
+        padding_side: Tokenizer padding side
+        device_index: Target GPU index (0, 1, etc.). If None, uses auto placement.
+                      For 4-bit models, this sets device at load time via device_map={"": device_index}.
+    
+    Returns:
+        (model, tokenizer) tuple
+    """
     quantization_config = None
     dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
+    
+    # Determine device_map based on device_index and available GPUs
+    if device_index is not None and torch.cuda.is_available():
+        # Validate device_index against available GPUs
+        num_gpus = torch.cuda.device_count()
+        if device_index >= num_gpus:
+            print(f"[load_model] WARNING: device_index={device_index} >= num_gpus={num_gpus}, falling back to cuda:0")
+            device_index = 0
+        
+        # For 4-bit models, use device_map={"": device_index} to place at load time
+        device_map = {"": device_index}
+        target_device = f"cuda:{device_index}"
+    else:
+        device_map = "auto"
+        target_device = "auto"
+    
     if load_in_4bit:
         quantization_config = BitsAndBytesConfig(
             load_in_4bit=True,
@@ -37,18 +65,25 @@ def load_model(model_id: str, load_in_4bit: bool = True, padding_side: str = "ri
             bnb_4bit_compute_dtype=dtype,
             bnb_4bit_use_double_quant=True,
         )
+    
     tokenizer = AutoTokenizer.from_pretrained(model_id, padding_side=padding_side)
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
         quantization_config=quantization_config,
-        device_map="auto",
+        device_map=device_map,
         torch_dtype=dtype,
     )
+    
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         model.config.pad_token_id = tokenizer.eos_token_id
     elif model.config.pad_token_id is None:
         model.config.pad_token_id = tokenizer.pad_token_id
+    
+    # Log device placement
+    actual_device = str(model.device) if hasattr(model, 'device') else str(device_map)
+    print(f"[load_model] {model_id} -> {actual_device}")
+    
     return model, tokenizer
 
 
