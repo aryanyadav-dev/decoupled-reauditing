@@ -51,6 +51,34 @@ def write_csv(path, fieldnames, rows):
             writer.writerow({k: row[k] for k in fieldnames})
 
 
+def get_device_placement_strategy(num_gpus):
+    """Get device placement strategy for models to avoid OOM.
+    
+    Returns:
+        tuple: (policy_device, llm_judge_device, independent_judge_device, description)
+    """
+    if num_gpus >= 2:
+        # Primary strategy: GPU 0 = policy only, GPU 1 = llm-judge + independent judge
+        # This gives policy maximum headroom for generation KV-cache
+        return (0, 1, 1, "GPU 0 = policy(7B), GPU 1 = llm-judge(7B) + independent-judge(7B)")
+    else:
+        # Single GPU fallback
+        return (0, 0, 0, "Single GPU = all models")
+
+
+def get_alternative_device_placement_strategy(num_gpus):
+    """Alternative device placement if primary strategy OOMs on GPU 1.
+    
+    Returns:
+        tuple: (policy_device, llm_judge_device, independent_judge_device, description)
+    """
+    if num_gpus >= 2:
+        # Alternative strategy: GPU 0 = policy + independent judge, GPU 1 = llm-judge only
+        return (0, 1, 0, "GPU 0 = policy(7B) + independent-judge(7B), GPU 1 = llm-judge(7B)")
+    else:
+        return (0, 0, 0, "Single GPU = all models")
+
+
 def run_real_experiment(mode, exp_name, csv_name):
     set_all_seeds(config.SEED)
     
@@ -61,12 +89,11 @@ def run_real_experiment(mode, exp_name, csv_name):
     
     # Determine device placement based on available GPUs
     num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
-    policy_device = 0
-    llm_judge_device = 0
-    independent_judge_device = 1 if num_gpus >= 2 else 0
+    policy_device, llm_judge_device, independent_judge_device, strategy_desc = get_device_placement_strategy(num_gpus)
     
     print(f"[run_real_experiment] GPUs available: {num_gpus}")
     print(f"[run_real_experiment] policy -> cuda:{policy_device}, LLM-judge -> cuda:{llm_judge_device}, independent-judge -> cuda:{independent_judge_device}")
+    print(f"[run_real_experiment] Strategy: {strategy_desc}")
     
     policy, tokenizer = load_model(config.MODEL_ID, config.LOAD_IN_4BIT, padding_side="left", device_index=policy_device)
     llm, llm_tok = load_model(config.LLM_JUDGE_ID, config.LOAD_IN_4BIT, device_index=llm_judge_device)
