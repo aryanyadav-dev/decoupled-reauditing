@@ -2,7 +2,8 @@
 # transformers==5.0.0, bitsandbytes (latest, install with --no-deps).
 transformers==5.0.0
 bitsandbytes
-peft==0.12.0
+# peft required for LoRA fine-tuning in all experiments; install with --no-deps on Kaggle pinned env to avoid disturbing torch/transformers.
+peft>=0.13
 trl==0.9.6
 datasets==2.21.0
 accelerate==0.33.0
