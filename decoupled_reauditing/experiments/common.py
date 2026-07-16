@@ -85,6 +85,34 @@ def log_gpu_memory():
         print("[GPU] No CUDA devices available")
 
 
+def free_model_from_gpu(model, model_name="model"):
+    """Free a model from GPU memory.
+    
+    Args:
+        model: The model to free
+        model_name: Name for logging
+    """
+    import gc
+    
+    print(f"[free_model_from_gpu] Freeing {model_name} from GPU...")
+    log_gpu_memory()
+    
+    # Delete the model
+    if hasattr(model, 'model'):
+        del model.model
+        model.model = None
+    
+    del model
+    
+    # Force garbage collection and GPU cache cleanup
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    
+    print(f"[free_model_from_gpu] {model_name} freed, memory after cleanup:")
+    log_gpu_memory()
+
+
 def create_temporary_judge(device_index=None):
     """Create a Math-Shepherd judge temporarily for scoring, then clean up.
     
@@ -97,7 +125,7 @@ def create_temporary_judge(device_index=None):
     import gc
     from decoupled_reauditing.metrics import make_independent_judge
     
-    print(f"[create_temporary_judge] Loading Math-Shepherd judge temporarily...")
+    print(f"[create_temporary_judge] Loading Math-Shepherd judge on device {device_index}...")
     log_gpu_memory()
     
     judge = make_independent_judge(device_index=device_index)
@@ -110,25 +138,7 @@ def create_temporary_judge(device_index=None):
 
 def cleanup_judge(judge):
     """Clean up judge and free GPU memory."""
-    import gc
-    
-    print(f"[cleanup_judge] Cleaning up Math-Shepherd judge...")
-    
-    # Delete the model explicitly
-    if hasattr(judge, 'model') and judge.model is not None:
-        del judge.model
-        judge.model = None
-    
-    # Delete the judge itself
-    del judge
-    
-    # Force garbage collection and GPU cache cleanup
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    
-    print(f"[cleanup_judge] Cleanup complete, memory after cleanup:")
-    log_gpu_memory()
+    free_model_from_gpu(judge, "Math-Shepherd judge")
 
 
 def run_real_experiment(mode, exp_name, csv_name):
@@ -139,33 +149,31 @@ def run_real_experiment(mode, exp_name, csv_name):
     
     train, eval_ = load_splits()
     
-    # Determine device placement based on available GPUs - only policy and llm-judge persistent
+    # Determine device placement based on available GPUs
     num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
     policy_device, llm_judge_device, strategy_desc = get_device_placement_strategy(num_gpus)
     
-    # Independent judge device: prefer GPU 1 if available, else GPU 0, else None (CPU)
-    judge_device = 1 if num_gpus >= 2 else 0 if torch.cuda.is_available() else None
+    # Independent judge device: same as llm_judge_device (will replace it during scoring)
+    judge_device = llm_judge_device if torch.cuda.is_available() else None
     
     print(f"[run_real_experiment] GPUs available: {num_gpus}")
-    print(f"[run_real_experiment] policy -> cuda:{policy_device}, LLM-judge -> cuda:{llm_judge_device}")
-    print(f"[run_real_experiment] independent-judge -> on-demand cuda:{judge_device}")
+    print(f"[run_real_experiment] policy -> cuda:{policy_device} (persistent)")
+    print(f"[run_real_experiment] llm-judge -> cuda:{llm_judge_device} (during sampling/filtering)")
+    print(f"[run_real_experiment] independent-judge -> cuda:{judge_device} (during scoring, replaces llm-judge)")
     print(f"[run_real_experiment] Strategy: {strategy_desc}")
     
     print(f"[run_real_experiment] Initial memory state:")
     log_gpu_memory()
     
-    # Load only policy and llm-judge persistently
+    # Load policy persistently on GPU 0 (never moves - holds LoRA weights being trained)
     policy, tokenizer = load_model(config.MODEL_ID, config.LOAD_IN_4BIT, padding_side="left", device_index=policy_device)
-    llm, llm_tok = load_model(config.LLM_JUDGE_ID, config.LOAD_IN_4BIT, device_index=llm_judge_device)
-    pool = make_real_pool(llm, llm_tok)
     
-    print(f"[run_real_experiment] Memory after loading persistent models:")
+    print(f"[run_real_experiment] Memory after loading policy:")
     log_gpu_memory()
-    
-    # DO NOT create judge here - it will be created on-demand per generation
     
     rows = []
     start = time.time()
+    
     for t in range(config.NUM_GENERATIONS):
         print(f"\n[run_real_experiment] === Generation {t} ===")
         
@@ -185,12 +193,53 @@ def run_real_experiment(mode, exp_name, csv_name):
         print(f"[run_real_experiment] Memory at start of generation {t}:")
         log_gpu_memory()
         
-        # Run generation with temporary judge creation
-        policy, clean, metric = run_generation_with_temp_judge(
-            policy, tokenizer, train, eval_, mode, t, pool, judge_device, exp_name, start
+        # PHASE 1: SAMPLING/FILTERING - Load llm-judge on GPU 1
+        print(f"\n[run_real_experiment] PHASE 1: SAMPLING/FILTERING")
+        llm, llm_tok = load_model(config.LLM_JUDGE_ID, config.LOAD_IN_4BIT, device_index=llm_judge_device)
+        pool = make_real_pool(llm, llm_tok)
+        
+        print(f"[run_real_experiment] Memory after loading llm-judge:")
+        log_gpu_memory()
+        
+        # Run sampling and filtering (no judge needed yet)
+        policy, clean, eval_traces, v_filt, contexts = run_sampling_and_filtering(
+            policy, tokenizer, train, eval_, mode, t, pool, exp_name, start
         )
         
-        rows.append(metric)
+        # PHASE 2: SCORING - Free llm-judge, load Math-Shepherd judge
+        print(f"\n[run_real_experiment] PHASE 2: SCORING")
+        print(f"[run_real_experiment] Freeing llm-judge to make room for Math-Shepherd judge...")
+        
+        # Free llm-judge from GPU 1
+        free_model_from_gpu(llm, "llm-judge model")
+        free_model_from_gpu(llm_tok, "llm-judge tokenizer")
+        del pool
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        print(f"[run_real_experiment] Memory after freeing llm-judge (GPU 1 now empty):")
+        log_gpu_memory()
+        
+        # Now load Math-Shepherd judge on the freed GPU 1
+        judge = create_temporary_judge(device_index=judge_device)
+        
+        # Compute metrics with the judge
+        from decoupled_reauditing.metrics import generation_metrics
+        metrics = generation_metrics(eval_, eval_traces, v_filt, clean, judge, contexts)
+        
+        # Free the judge immediately after scoring
+        cleanup_judge(judge)
+        
+        # Add generation metadata to metrics
+        metrics.update({
+            "gen": t,
+            "mode": mode,
+            "accepted_n": len(clean.get("accepted", [])) if isinstance(clean, dict) else len(clean),
+            "clean_n": len(clean) if isinstance(clean, list) else clean.get("clean_n", 0),
+        })
+        
+        rows.append(metrics)
         
         print(f"[run_real_experiment] Memory at end of generation {t}:")
         log_gpu_memory()
@@ -199,19 +248,76 @@ def run_real_experiment(mode, exp_name, csv_name):
     return rows
 
 
-def run_generation_with_temp_judge(policy, tokenizer, train_data, eval_data, mode, t, pool, judge_device, exp_name, start_time):
-    """Run generation with temporary judge loading for metrics computation only."""
-    from decoupled_reauditing.selftrain.loop import run_generation
+def run_sampling_and_filtering(policy, tokenizer, train_data, eval_data, mode, t, pool, exp_name, start_time):
+    """Run sampling and filtering phase without judge (judge used later for scoring only).
     
-    # First run the generation logic without judge (it doesn't need judge until metrics)
-    # We need to modify run_generation to accept judge as optional and create it when needed
+    Returns:
+        tuple: (updated_policy, clean_set, eval_traces, v_filt, contexts)
+    """
+    import sys
+    from decoupled_reauditing.selftrain.sampler import greedy_eval_traces, sample_traces
+    from decoupled_reauditing.selftrain.reaudit import accept_set, decoupled_reaudit, reaudit_set, rotation_pair
+    from decoupled_reauditing.selftrain.finetune import finetune_policy
     
-    # For now, create judge temporarily, run generation, then clean up
-    judge = create_temporary_judge(device_index=judge_device)
+    # Check wall clock budget
+    elapsed = time.time() - start_time
+    if elapsed > config.MAX_WALL_CLOCK_SEC:
+        ckpt = Path("results") / f"_ckpt_{exp_name}_gen{t}_budget.jsonl"
+        checkpoint_jsonl(ckpt, [{"resume": True, "reason": "wall_clock_budget", "generation": t}])
+        print(f"RESUME: wall-clock budget reached before generation {t}; checkpointed {ckpt}")
+        sys.exit(0)
     
-    try:
-        result = run_generation(policy, tokenizer, train_data, eval_data, mode, t, pool, judge, exp_name, start_time)
-        return result
-    finally:
-        # Always clean up judge after use
-        cleanup_judge(judge)
+    # Sample traces and build contexts
+    samples = sample_traces(policy, tokenizer, train_data, config.K_SAMPLES)
+    contexts = build_contexts(samples)
+    
+    # Run filtering based on mode (no judge needed)
+    if mode == "naive":
+        v_filt = pool[0]
+        v_audit = None
+        accepted = accept_set(samples, v_filt, contexts)
+        clean = accepted
+    elif mode == "method":
+        v_filt, v_audit, accepted, clean = decoupled_reaudit(samples, pool, t, contexts)
+    elif mode == "rotation_only":
+        v_filt, _ = rotation_pair(pool, t)
+        v_audit = None
+        accepted = accept_set(samples, v_filt, contexts)
+        clean = accepted
+    elif mode == "reaudit_only":
+        v_filt, v_audit = pool[0], pool[1]
+        accepted = accept_set(samples, v_filt, contexts)
+        clean = reaudit_set(accepted, v_audit, contexts)
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+    
+    # Generate eval traces
+    eval_traces = greedy_eval_traces(policy, tokenizer, eval_data)
+    
+    # Checkpoint clean set (without metrics yet - those need judge)
+    ckpt_rows = [{"kind": "clean", **x} for x in clean]
+    checkpoint_jsonl(Path("results") / f"_ckpt_{exp_name}_gen{t}_partial.jsonl", ckpt_rows)
+    
+    # Fine-tune if we have clean data
+    if clean:
+        policy = finetune_policy(policy, tokenizer, clean, str(Path("results") / f"adapter_{exp_name}_gen{t}"))
+    else:
+        print(f"WARNING: empty clean set at {exp_name} generation {t}; carrying policy forward.")
+    
+    return policy, clean, eval_traces, v_filt, contexts
+
+
+def build_contexts(samples):
+    """Build contexts dict from samples."""
+    contexts = {}
+    for item in samples:
+        contexts.setdefault(item["problem_id"], {"samples": item["all_samples"]})
+    return contexts
+
+
+def checkpoint_jsonl(path, rows):
+    """Write checkpoint JSONL file."""
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
