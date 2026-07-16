@@ -8,7 +8,7 @@ import torch
 from decoupled_reauditing import config
 from decoupled_reauditing.metrics import make_independent_judge
 from decoupled_reauditing.selftrain.loop import run_generation
-from decoupled_reauditing.utils import load_gsm8k, load_model, set_all_seeds
+from decoupled_reauditing.utils import load_gsm8k, load_model, set_all_seeds, check_bnb
 from decoupled_reauditing.verifiers import make_real_pool
 
 
@@ -53,6 +53,10 @@ def write_csv(path, fieldnames, rows):
 
 def run_real_experiment(mode, exp_name, csv_name):
     set_all_seeds(config.SEED)
+    
+    # Check bitsandbytes functionality before loading models
+    check_bnb()
+    
     train, eval_ = load_splits()
     
     # Determine device placement based on available GPUs

@@ -2,7 +2,13 @@ from typing import Dict, List
 
 from datasets import Dataset
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
-from transformers import TrainingArguments
+
+# Handle transformers 5.0+ TrainingArguments import
+try:
+    from transformers import TrainingArguments
+except ImportError:
+    from transformers.training_args import TrainingArguments
+
 from trl import SFTTrainer
 
 from decoupled_reauditing import config

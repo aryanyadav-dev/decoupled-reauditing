@@ -1,13 +1,13 @@
-torch
-transformers==4.44.2
-trl==0.9.6
+# Targets Kaggle pinned env: torch 2.10 (CUDA 12.8, provided by platform, do NOT pin),
+# transformers==5.0.0, bitsandbytes (latest, install with --no-deps).
+transformers==5.0.0
+bitsandbytes
 peft==0.12.0
-accelerate==0.33.0
-bitsandbytes>=0.46.0
+trl==0.9.6
 datasets==2.21.0
+accelerate==0.33.0
 pandas
 matplotlib
-numpy==1.26.4
 tqdm
 scikit-learn
 huggingface_hub
