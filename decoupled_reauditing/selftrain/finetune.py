@@ -47,15 +47,30 @@ def finetune_policy(policy, tokenizer, clean_set: List[Dict], output_dir: str):
         data_seed=config.SEED,
         fp16=True,
     )
-    trainer = SFTTrainer(
-        model=policy,
-        tokenizer=tokenizer,
-        train_dataset=ds,
-        dataset_text_field="text",
-        max_seq_length=1024,
-        args=args,
-        packing=False,
-    )
+    # Create trainer with compatibility for trl API changes
+    # Newer trl versions (0.10+) use processing_class instead of tokenizer
+    trainer_kwargs = {
+        "model": policy,
+        "train_dataset": ds,
+        "dataset_text_field": "text",
+        "max_seq_length": 1024,
+        "args": args,
+        "packing": False,
+    }
+    
+    # Try new API first (processing_class), fall back to tokenizer if not supported
+    try:
+        trainer = SFTTrainer(
+            processing_class=tokenizer,
+            **trainer_kwargs
+        )
+    except TypeError:
+        # Fall back to older API with tokenizer parameter
+        trainer = SFTTrainer(
+            tokenizer=tokenizer,
+            **trainer_kwargs
+        )
+    
     trainer.train()
     return trainer.model
 
