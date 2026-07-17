@@ -32,8 +32,13 @@ def finetune_policy(policy, tokenizer, clean_set: List[Dict], output_dir: str):
         print("[finetune_policy] Empty clean_set, returning policy unchanged")
         return policy
     
-    # Prepare model for k-bit training if not already PEFT model
+    # Prepare model for k-bit training and apply LoRA if not already PEFT model
+    # IMPORTANT: In multi-generation self-training, generation 0 applies LoRA to base model,
+    # but generation t>0 already has a PeftModel from previous generation. Never re-apply
+    # get_peft_model to an existing PeftModel (would nest adapters). Just continue training
+    # the existing adapter.
     if not getattr(policy, "is_peft_model", False):
+        print(f"[finetune_policy] Model is not yet a PeftModel; applying LoRA")
         policy = prepare_model_for_kbit_training(policy)
         lora_config = LoraConfig(
             r=config.LORA_R,
@@ -46,9 +51,7 @@ def finetune_policy(policy, tokenizer, clean_set: List[Dict], output_dir: str):
         policy = get_peft_model(policy, lora_config)
         print(f"[finetune_policy] Applied LoRA with r={config.LORA_R}, alpha={config.LORA_ALPHA}")
     else:
-        # Model already has PEFT, don't pass peft_config again
-        lora_config = None
-        print("[finetune_policy] Model already has PEFT, skipping LoRA application")
+        print(f"[finetune_policy] Model is already a PeftModel; continuing training on existing adapter")
     
     # Convert clean_set to HuggingFace Dataset with proper format
     # Each item needs a "text" column containing the full training string
@@ -94,13 +97,16 @@ def finetune_policy(policy, tokenizer, clean_set: List[Dict], output_dir: str):
     print(f"[finetune_policy] SFTConfig created: max_steps={config.TRAIN_STEPS}, max_length=1024, dataset_text_field='text'")
     
     # Create trainer with trl 1.8.0 API
-    # SFTTrainer signature: model, args, train_dataset, processing_class, peft_config
+    # IMPORTANT: Do NOT pass peft_config to SFTTrainer when the model is already a PeftModel
+    # (which it is after get_peft_model above, or from a previous generation). Passing
+    # peft_config to SFTTrainer when model is already PeftModel causes "You passed a
+    # PeftModel instance together with a peft_config" error. The trainer will train the
+    # already-applied LoRA adapter.
     trainer = SFTTrainer(
         model=policy,
         args=sft_config,
         train_dataset=ds,
         processing_class=tokenizer,
-        peft_config=lora_config,
     )
     
     print(f"[finetune_policy] Starting training for {config.TRAIN_STEPS} steps...")
