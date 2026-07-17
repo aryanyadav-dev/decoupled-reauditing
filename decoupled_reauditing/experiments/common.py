@@ -86,10 +86,13 @@ def log_gpu_memory():
 
 
 def free_model_from_gpu(model, model_name="model"):
-    """Free a model from GPU memory.
+    """Free a model or tokenizer from GPU memory.
+    
+    Robustly handles both models (which may have .model attribute) and 
+    tokenizers (which don't). Safe to call on any object.
     
     Args:
-        model: The model to free
+        model: The model or tokenizer to free
         model_name: Name for logging
     """
     import gc
@@ -97,10 +100,15 @@ def free_model_from_gpu(model, model_name="model"):
     print(f"[free_model_from_gpu] Freeing {model_name} from GPU...")
     log_gpu_memory()
     
-    # Delete the model
-    if hasattr(model, 'model'):
-        del model.model
-        model.model = None
+    # Safely delete the .model attribute if it exists
+    # Tokenizers don't have .model, so use try/except to avoid AttributeError
+    try:
+        if getattr(model, 'model', None) is not None:
+            del model.model
+            model.model = None
+    except (AttributeError, TypeError):
+        # Object doesn't have .model or it's read-only - skip this cleanup
+        pass
     
     del model
     
