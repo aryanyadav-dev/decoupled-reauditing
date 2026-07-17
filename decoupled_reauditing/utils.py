@@ -79,7 +79,9 @@ def load_model(model_id: str, load_in_4bit: bool = True, padding_side: str = "ri
         (model, tokenizer) tuple
     """
     quantization_config = None
-    dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
+    # PRECISION: Use bfloat16 for all models to match 4-bit compute dtype and trainer precision.
+    # This ensures model dtype, quant compute dtype, and trainer all use bf16 consistently.
+    dtype = torch.bfloat16
     
     # Determine device_map based on device_index and available GPUs
     if device_index is not None and torch.cuda.is_available():
@@ -98,11 +100,12 @@ def load_model(model_id: str, load_in_4bit: bool = True, padding_side: str = "ri
         target_device = "default"
     
     if load_in_4bit:
-        # Ensure dtype is compatible with bitsandbytes and transformers 5.0
+        # PRECISION: All 4-bit quant settings use bfloat16 for stable QLoRA training.
+        # This disables fp16 grad scaler (which has missing bf16 kernel on T4).
         quantization_config = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16,  # Explicit bfloat16 for Kaggle T4
+            bnb_4bit_compute_dtype=torch.bfloat16,  # Compute in bfloat16 (matches trainer)
             bnb_4bit_use_double_quant=True,
         )
     

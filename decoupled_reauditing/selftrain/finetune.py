@@ -77,6 +77,8 @@ def finetune_policy(policy, tokenizer, clean_set: List[Dict], output_dir: str):
     
     # Build SFTConfig with ALL training and dataset parameters
     # trl 1.8.0 API: use max_length (NOT max_seq_length) and dataset_text_field
+    # PRECISION: Use bf16=True, fp16=False to match 4-bit model's bfloat16 compute dtype.
+    # This prevents NotImplementedError for missing bf16 grad scaler kernel on T4 GPUs.
     sft_config = SFTConfig(
         output_dir=output_dir,
         max_steps=config.TRAIN_STEPS,
@@ -89,13 +91,14 @@ def finetune_policy(policy, tokenizer, clean_set: List[Dict], output_dir: str):
         report_to=[],
         seed=config.SEED,
         data_seed=config.SEED,
-        fp16=True,
+        bf16=True,  # Use bfloat16 precision (matches model's bnb_4bit_compute_dtype)
+        fp16=False,  # Do NOT use fp16 (would trigger incompatible grad scaler)
         dataset_text_field="text",  # Must match the column name in Dataset
         max_length=1024,
         packing=False,
     )
     
-    print(f"[finetune_policy] SFTConfig created: max_steps={config.TRAIN_STEPS}, max_length=1024, dataset_text_field='text'")
+    print(f"[finetune_policy] SFTConfig created: max_steps={config.TRAIN_STEPS}, bf16=True, max_length=1024")
     
     # Create trainer with trl 1.8.0 API
     # Multi-generation strategy:
