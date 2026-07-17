@@ -2,36 +2,40 @@ from typing import Dict, List
 
 from datasets import Dataset
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
-
-# Handle trl API changes: trl 0.12+ uses SFTConfig
-try:
-    from trl import SFTTrainer, SFTConfig
-    USE_SFT_CONFIG = True
-except ImportError:
-    from trl import SFTTrainer
-    USE_SFT_CONFIG = False
-    # Fall back to TrainingArguments for older trl
-    try:
-        from transformers import TrainingArguments
-    except ImportError:
-        from transformers.training_args import TrainingArguments
+from trl import SFTTrainer, SFTConfig
+import trl
 
 from decoupled_reauditing import config
 from decoupled_reauditing.utils import build_prompt
 
 
 def format_training_text(item: Dict) -> str:
+    """Format a clean_set item into full training text (problem + trace)."""
     return f"{build_prompt(item['problem'])}\n{item['trace']}"
 
 
 def finetune_policy(policy, tokenizer, clean_set: List[Dict], output_dir: str):
+    """Fine-tune policy with LoRA on clean training set.
+    
+    Args:
+        policy: The policy model to fine-tune
+        tokenizer: Tokenizer for the model
+        clean_set: List of dicts with 'problem' and 'trace' keys
+        output_dir: Directory to save adapter weights
+    
+    Returns:
+        Fine-tuned policy model
+    """
+    print(f"[finetune_policy] trl version: {trl.__version__}")
+    
     if not clean_set:
+        print("[finetune_policy] Empty clean_set, returning policy unchanged")
         return policy
     
     # Prepare model for k-bit training if not already PEFT model
     if not getattr(policy, "is_peft_model", False):
         policy = prepare_model_for_kbit_training(policy)
-        lora = LoraConfig(
+        lora_config = LoraConfig(
             r=config.LORA_R,
             lora_alpha=config.LORA_ALPHA,
             lora_dropout=config.LORA_DROPOUT,
@@ -39,78 +43,69 @@ def finetune_policy(policy, tokenizer, clean_set: List[Dict], output_dir: str):
             task_type=TaskType.CAUSAL_LM,
             target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
         )
-        policy = get_peft_model(policy, lora)
+        policy = get_peft_model(policy, lora_config)
+        print(f"[finetune_policy] Applied LoRA with r={config.LORA_R}, alpha={config.LORA_ALPHA}")
     else:
-        # Model already has PEFT, reuse its config
-        lora = None
+        # Model already has PEFT, don't pass peft_config again
+        lora_config = None
+        print("[finetune_policy] Model already has PEFT, skipping LoRA application")
     
-    ds = Dataset.from_dict({"text": [format_training_text(x) for x in clean_set]})
+    # Convert clean_set to HuggingFace Dataset with proper format
+    # Each item needs a "text" column containing the full training string
+    formatted_data = []
+    for item in clean_set:
+        # Build full training text: problem + trace
+        full_text = format_training_text(item)
+        formatted_data.append({"text": full_text})
     
-    if USE_SFT_CONFIG:
-        # Modern trl 0.12+ API: use SFTConfig
-        sft_config = SFTConfig(
-            output_dir=output_dir,
-            max_steps=config.TRAIN_STEPS,
-            per_device_train_batch_size=1,
-            gradient_accumulation_steps=4,
-            learning_rate=2e-5,
-            logging_steps=5,
-            save_steps=max(config.TRAIN_STEPS, 1),
-            report_to=[],
-            seed=config.SEED,
-            data_seed=config.SEED,
-            fp16=True,
-            dataset_text_field="text",
-            max_seq_length=1024,
-            packing=False,
-        )
-        
-        # Create trainer with modern API
-        trainer = SFTTrainer(
-            model=policy,
-            processing_class=tokenizer,
-            train_dataset=ds,
-            args=sft_config,
-            peft_config=lora if lora is not None else None,
-        )
-    else:
-        # Legacy trl API: use TrainingArguments
-        training_args = TrainingArguments(
-            output_dir=output_dir,
-            max_steps=config.TRAIN_STEPS,
-            per_device_train_batch_size=1,
-            gradient_accumulation_steps=4,
-            learning_rate=2e-5,
-            logging_steps=5,
-            save_steps=max(config.TRAIN_STEPS, 1),
-            report_to=[],
-            seed=config.SEED,
-            data_seed=config.SEED,
-            fp16=True,
-        )
-        
-        # Try modern tokenizer parameter name first, fall back to old name
-        try:
-            trainer = SFTTrainer(
-                model=policy,
-                processing_class=tokenizer,
-                train_dataset=ds,
-                dataset_text_field="text",
-                max_seq_length=1024,
-                args=training_args,
-                packing=False,
-            )
-        except TypeError:
-            trainer = SFTTrainer(
-                model=policy,
-                tokenizer=tokenizer,
-                train_dataset=ds,
-                dataset_text_field="text",
-                max_seq_length=1024,
-                args=training_args,
-                packing=False,
-            )
+    # Create Dataset from list of dicts
+    ds = Dataset.from_list(formatted_data)
     
+    # Validation: print dataset info before training
+    print(f"[finetune_policy] Dataset info:")
+    print(f"  - Length: {len(ds)}")
+    print(f"  - Column names: {ds.column_names}")
+    print(f"  - Features: {ds.features}")
+    if len(ds) > 0:
+        sample_text = ds[0]["text"]
+        print(f"  - Sample text (first 200 chars): {sample_text[:200]}...")
+        print(f"  - Sample text length: {len(sample_text)} chars")
+    
+    # Build SFTConfig with ALL training and dataset parameters
+    # trl 1.8.0 API: use max_length (NOT max_seq_length) and dataset_text_field
+    sft_config = SFTConfig(
+        output_dir=output_dir,
+        max_steps=config.TRAIN_STEPS,
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=4,
+        learning_rate=2e-5,
+        logging_steps=5,
+        save_strategy="steps",
+        save_steps=max(config.TRAIN_STEPS, 1),
+        report_to=[],
+        seed=config.SEED,
+        data_seed=config.SEED,
+        fp16=True,
+        dataset_text_field="text",  # Must match the column name in Dataset
+        max_length=1024,
+        packing=False,
+    )
+    
+    print(f"[finetune_policy] SFTConfig created: max_steps={config.TRAIN_STEPS}, max_length=1024, dataset_text_field='text'")
+    
+    # Create trainer with trl 1.8.0 API
+    # SFTTrainer signature: model, args, train_dataset, processing_class, peft_config
+    trainer = SFTTrainer(
+        model=policy,
+        args=sft_config,
+        train_dataset=ds,
+        processing_class=tokenizer,
+        peft_config=lora_config,
+    )
+    
+    print(f"[finetune_policy] Starting training for {config.TRAIN_STEPS} steps...")
     trainer.train()
+    print(f"[finetune_policy] Training complete")
+    
     return trainer.model
 
