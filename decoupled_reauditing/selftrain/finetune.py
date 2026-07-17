@@ -110,6 +110,15 @@ def finetune_policy(policy, tokenizer, clean_set: List[Dict], output_dir: str):
         peft_config=lora_config,  # None if already PeftModel, LoraConfig if generation 0
     )
     
+    # CRITICAL FIX: Force single-GPU training on cuda:0 to prevent DataParallel wrapper
+    # The 4-bit policy lives only on cuda:0. SFTTrainer auto-detects multiple GPUs and
+    # tries to wrap the model in nn.DataParallel across cuda:0 and cuda:1, causing
+    # "Expected all tensors on the same device (cuda:1 vs cuda:0)" error.
+    # Solution: Override trainer args to use only 1 GPU (cuda:0 where policy resides).
+    # This does NOT affect judge/llm-judge multi-GPU placement (they load separately).
+    trainer.args._n_gpu = 1
+    print(f"[finetune_policy] Forced single-GPU training: _n_gpu=1 (policy on {policy.device})")
+    
     print(f"[finetune_policy] Starting training for {config.TRAIN_STEPS} steps...")
     trainer.train()
     print(f"[finetune_policy] Training complete")
