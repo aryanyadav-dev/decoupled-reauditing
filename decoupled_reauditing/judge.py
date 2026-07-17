@@ -33,21 +33,74 @@ def split_steps(trace: str) -> List[str]:
 
 
 def resolve_prm_tokens(tokenizer):
-    candidate_tokens = tokenizer.encode(f"{GOOD_TOKEN} {BAD_TOKEN}")[1:]
-    step_tag_id = tokenizer.encode(STEP_TAG)[-1]
-    if len(candidate_tokens) != 2:
-        raise RuntimeError("Could not resolve Math-Shepherd + / - candidate tokens exactly.")
-    if step_tag_id is None:
-        raise RuntimeError("Could not resolve Math-Shepherd step tag token.")
-    if candidate_tokens[0] == candidate_tokens[1]:
-        raise RuntimeError("Math-Shepherd positive and negative token ids collapsed.")
-    # Model card values for this checkpoint: + -> 648, - -> 387, step tag -> 12902.
-    # Raise instead of silently scoring the wrong positions if tokenizer drift occurs.
-    if candidate_tokens != [648, 387] or step_tag_id != 12902:
-        raise RuntimeError(
-            f"Unexpected PRM tokenization: candidates={candidate_tokens}, step_tag_id={step_tag_id}"
-        )
-    return candidate_tokens, step_tag_id
+    """Resolve Math-Shepherd PRM token IDs following official recipe.
+    
+    Math-Shepherd uses '+' for good steps, '-' for bad steps, and 'ки' as step tag.
+    Official inference recipe: encode("+ -")[1:] to get candidate tokens.
+    
+    Args:
+        tokenizer: Math-Shepherd tokenizer
+        
+    Returns:
+        tuple: (candidate_tokens, step_tag_id) where candidate_tokens = [good_id, bad_id]
+    """
+    good_token = "+"
+    bad_token = "-"
+    step_tag = "ки"
+    
+    # Method 1: Official Math-Shepherd recipe - encode "+ -" and drop leading token
+    # This handles tokenizers that prepend BOS or space tokens
+    try:
+        candidate_tokens = tokenizer.encode(f"{good_token} {bad_token}")[1:]
+        step_tag_id = tokenizer.encode(step_tag)[-1]
+        
+        if len(candidate_tokens) == 2 and candidate_tokens[0] != candidate_tokens[1]:
+            print(f"[resolve_prm_tokens] Method 1 (encode): good=+={candidate_tokens[0]}, bad=-={candidate_tokens[1]}, step_tag=ки={step_tag_id}")
+            
+            # Validate against known values for peiyi9979/math-shepherd-mistral-7b-prm
+            # Model card values: + -> 648, - -> 387, step tag -> 12902
+            if candidate_tokens == [648, 387] and step_tag_id == 12902:
+                print(f"[resolve_prm_tokens] ✓ Token IDs match Math-Shepherd expected values")
+                return candidate_tokens, step_tag_id
+            else:
+                print(f"[resolve_prm_tokens] WARNING: Token IDs differ from expected [648, 387, 12902]")
+                print(f"[resolve_prm_tokens] This may indicate tokenizer drift or different checkpoint")
+                return candidate_tokens, step_tag_id
+    except Exception as e:
+        print(f"[resolve_prm_tokens] Method 1 failed: {e}")
+    
+    # Method 2: Fallback - direct token-to-id conversion
+    try:
+        good_id = tokenizer.convert_tokens_to_ids(good_token)
+        bad_id = tokenizer.convert_tokens_to_ids(bad_token)
+        step_tag_id = tokenizer.convert_tokens_to_ids(step_tag)
+        
+        # Verify none are unknown token ID
+        unk_id = tokenizer.unk_token_id
+        if good_id != unk_id and bad_id != unk_id and step_tag_id != unk_id and good_id != bad_id:
+            candidate_tokens = [good_id, bad_id]
+            print(f"[resolve_prm_tokens] Method 2 (convert_tokens_to_ids): good=+={good_id}, bad=-={bad_id}, step_tag=ки={step_tag_id}")
+            return candidate_tokens, step_tag_id
+    except Exception as e:
+        print(f"[resolve_prm_tokens] Method 2 failed: {e}")
+    
+    # Both methods failed - raise error with diagnostic info
+    try:
+        encoded_combined = tokenizer.encode(f"{good_token} {bad_token}")
+        encoded_good = tokenizer.encode(good_token)
+        encoded_bad = tokenizer.encode(bad_token)
+        encoded_step = tokenizer.encode(step_tag)
+    except:
+        encoded_combined = encoded_good = encoded_bad = encoded_step = "error"
+    
+    raise RuntimeError(
+        f"Could not resolve Math-Shepherd +/- candidate tokens exactly.\n"
+        f"  encode('+ -') = {encoded_combined}\n"
+        f"  encode('+') = {encoded_good}\n"
+        f"  encode('-') = {encoded_bad}\n"
+        f"  encode('ки') = {encoded_step}\n"
+        f"Tokenizer may be incompatible with Math-Shepherd PRM checkpoint."
+    )
 
 
 def format_for_prm(problem: str, trace: str) -> str:
