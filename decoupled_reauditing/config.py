@@ -1,13 +1,20 @@
 """Global configuration for Decoupled Re-Auditing.
 
-Exactly one active regime is resolved by precedence:
-SMOKE_TEST, then PILOT_MODE, else FULL.
+Regime selection by precedence:
+1. DRA_SMOKE_TEST=1 forces SMOKE (overrides all)
+2. DRA_REGIME env var selects SMOKE / ABLATION / FULL
+3. Default: FULL
+
+Locked experiment plan:
+- Exp 1, Exp 2: FULL (300 problems, k=3, 4 generations)
+- Exp 3: ABLATION (100 problems, k=3, 2 generations)
+- Smoke tests: SMOKE (8 problems, k=2, 1 generation)
 """
 
 import os
 
 SMOKE_TEST = os.getenv("DRA_SMOKE_TEST", "1") == "1"
-PILOT_MODE = os.getenv("DRA_PILOT_MODE", "0") == "1"
+REGIME_NAME = os.getenv("DRA_REGIME", "FULL").upper()
 
 MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.3"
 LLM_JUDGE_ID = "mistralai/Mistral-7B-Instruct-v0.3"
@@ -20,25 +27,34 @@ LORA_R = 16
 LORA_ALPHA = 32
 LORA_DROPOUT = 0.05
 LOAD_IN_4BIT = True
-SEED = 42
+SEED = int(os.getenv("DRA_SEED", "42"))  # Configurable seed for multi-seed runs
 PRM_THRESHOLD = 0.5
 MAX_WALL_CLOCK_SEC = 39600
 GEN_BATCH_SIZE = 8  # Number of problems to batch per model.generate() call for speedup
 
 REGIMES = {
     "SMOKE": dict(NUM_PROBLEMS=8, EVAL_N=8, PROBE_N=8, K_SAMPLES=2, NUM_GENERATIONS=1, TRAIN_STEPS=5),
-    "PILOT": dict(NUM_PROBLEMS=100, EVAL_N=100, PROBE_N=50, K_SAMPLES=5, NUM_GENERATIONS=2, TRAIN_STEPS=50),
-    "FULL": dict(NUM_PROBLEMS=500, EVAL_N=500, PROBE_N=200, K_SAMPLES=5, NUM_GENERATIONS=4, TRAIN_STEPS=200),
+    "ABLATION": dict(NUM_PROBLEMS=100, EVAL_N=100, PROBE_N=50, K_SAMPLES=3, NUM_GENERATIONS=2, TRAIN_STEPS=50),
+    "FULL": dict(NUM_PROBLEMS=300, EVAL_N=300, PROBE_N=120, K_SAMPLES=3, NUM_GENERATIONS=4, TRAIN_STEPS=200),
 }
 
 
 def active_regime():
+    """Select active regime based on environment variables.
+    
+    Precedence:
+    1. DRA_SMOKE_TEST=1 -> SMOKE (overrides all)
+    2. DRA_REGIME env var -> specified regime
+    3. Default -> FULL
+    """
     if SMOKE_TEST:
         name = "SMOKE"
-    elif PILOT_MODE:
-        name = "PILOT"
+    elif REGIME_NAME in REGIMES:
+        name = REGIME_NAME
     else:
+        print(f"[config] WARNING: Unknown DRA_REGIME={REGIME_NAME}, falling back to FULL")
         name = "FULL"
+    
     vals = dict(REGIMES[name])
     vals["REGIME"] = name
     return vals
