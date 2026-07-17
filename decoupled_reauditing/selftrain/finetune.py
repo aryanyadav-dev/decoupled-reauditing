@@ -1,7 +1,7 @@
 from typing import Dict, List
 
 from datasets import Dataset
-from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
+from peft import LoraConfig, TaskType, prepare_model_for_kbit_training
 from trl import SFTTrainer, SFTConfig
 import trl
 
@@ -32,13 +32,17 @@ def finetune_policy(policy, tokenizer, clean_set: List[Dict], output_dir: str):
         print("[finetune_policy] Empty clean_set, returning policy unchanged")
         return policy
     
-    # Prepare model for k-bit training and apply LoRA if not already PEFT model
-    # IMPORTANT: In multi-generation self-training, generation 0 applies LoRA to base model,
-    # but generation t>0 already has a PeftModel from previous generation. Never re-apply
-    # get_peft_model to an existing PeftModel (would nest adapters). Just continue training
-    # the existing adapter.
-    if not getattr(policy, "is_peft_model", False):
-        print(f"[finetune_policy] Model is not yet a PeftModel; applying LoRA")
+    # Check if model already has LoRA adapter (from previous generation)
+    is_peft_model = getattr(policy, "is_peft_model", False)
+    
+    if is_peft_model:
+        print(f"[finetune_policy] Model is already a PeftModel (generation t>0); continuing training on existing adapter")
+        # Don't pass peft_config to SFTTrainer - would conflict with existing PeftModel
+        lora_config = None
+    else:
+        print(f"[finetune_policy] Model is not yet a PeftModel (generation 0); SFTTrainer will apply LoRA")
+        # Let SFTTrainer apply LoRA via peft_config
+        # Prepare model for k-bit training first
         policy = prepare_model_for_kbit_training(policy)
         lora_config = LoraConfig(
             r=config.LORA_R,
@@ -48,10 +52,7 @@ def finetune_policy(policy, tokenizer, clean_set: List[Dict], output_dir: str):
             task_type=TaskType.CAUSAL_LM,
             target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
         )
-        policy = get_peft_model(policy, lora_config)
-        print(f"[finetune_policy] Applied LoRA with r={config.LORA_R}, alpha={config.LORA_ALPHA}")
-    else:
-        print(f"[finetune_policy] Model is already a PeftModel; continuing training on existing adapter")
+        print(f"[finetune_policy] LoRA config prepared: r={config.LORA_R}, alpha={config.LORA_ALPHA}")
     
     # Convert clean_set to HuggingFace Dataset with proper format
     # Each item needs a "text" column containing the full training string
@@ -97,16 +98,16 @@ def finetune_policy(policy, tokenizer, clean_set: List[Dict], output_dir: str):
     print(f"[finetune_policy] SFTConfig created: max_steps={config.TRAIN_STEPS}, max_length=1024, dataset_text_field='text'")
     
     # Create trainer with trl 1.8.0 API
-    # IMPORTANT: Do NOT pass peft_config to SFTTrainer when the model is already a PeftModel
-    # (which it is after get_peft_model above, or from a previous generation). Passing
-    # peft_config to SFTTrainer when model is already PeftModel causes "You passed a
-    # PeftModel instance together with a peft_config" error. The trainer will train the
-    # already-applied LoRA adapter.
+    # Multi-generation strategy:
+    # - Generation 0: pass peft_config to SFTTrainer, which applies LoRA and trains
+    # - Generation t>0: model is already PeftModel, pass peft_config=None, just train existing adapter
+    # This avoids "You passed a PeftModel instance together with a peft_config" error
     trainer = SFTTrainer(
         model=policy,
         args=sft_config,
         train_dataset=ds,
         processing_class=tokenizer,
+        peft_config=lora_config,  # None if already PeftModel, LoraConfig if generation 0
     )
     
     print(f"[finetune_policy] Starting training for {config.TRAIN_STEPS} steps...")
