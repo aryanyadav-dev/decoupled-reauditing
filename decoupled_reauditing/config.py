@@ -14,7 +14,7 @@ LLM_JUDGE_ID = "mistralai/Mistral-7B-Instruct-v0.3"
 JUDGE_ID = "peiyi9979/math-shepherd-mistral-7b-prm"
 
 TEMPERATURE = 0.8
-MAX_NEW_TOKENS_POLICY = 400
+MAX_NEW_TOKENS_POLICY = 256  # Reduced from 400; GSM8K traces fit in 256 tokens, ~25% speedup
 MAX_NEW_TOKENS_JUDGE = 512
 LORA_R = 16
 LORA_ALPHA = 32
@@ -23,6 +23,7 @@ LOAD_IN_4BIT = True
 SEED = 42
 PRM_THRESHOLD = 0.5
 MAX_WALL_CLOCK_SEC = 39600
+GEN_BATCH_SIZE = 8  # Number of problems to batch per model.generate() call for speedup
 
 REGIMES = {
     "SMOKE": dict(NUM_PROBLEMS=8, EVAL_N=8, PROBE_N=8, K_SAMPLES=2, NUM_GENERATIONS=1, TRAIN_STEPS=5),
