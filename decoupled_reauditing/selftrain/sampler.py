@@ -28,6 +28,19 @@ def sample_traces(policy, tokenizer, data: List[Dict], k: int = config.K_SAMPLES
     out = []
     batch_size = config.GEN_BATCH_SIZE
     
+    # CRITICAL: Switch policy to inference mode for generation
+    # After fine-tuning, the model is left with gradient_checkpointing=ON and use_cache=OFF,
+    # which breaks .generate() with KV-cache/attention-mask shape mismatch.
+    # Save training state and switch to inference config.
+    was_training = policy.training
+    if hasattr(policy, 'gradient_checkpointing_disable'):
+        policy.gradient_checkpointing_disable()
+    if hasattr(policy, 'config'):
+        policy.config.use_cache = True
+    policy.eval()
+    
+    print(f"[sample_traces] Switched policy to inference mode (gradient_checkpointing=OFF, use_cache=True, eval)")
+    
     # Set left-padding for decoder-only generation (required for batching)
     original_padding_side = tokenizer.padding_side
     tokenizer.padding_side = "left"
@@ -91,6 +104,17 @@ def sample_traces(policy, tokenizer, data: List[Dict], k: int = config.K_SAMPLES
     # Restore original padding side
     tokenizer.padding_side = original_padding_side
     
+    # Restore training config for next fine-tune phase
+    # Fine-tuning expects: gradient_checkpointing=ON, use_cache=False, train()
+    if hasattr(policy, 'config'):
+        policy.config.use_cache = False
+    if hasattr(policy, 'gradient_checkpointing_enable'):
+        policy.gradient_checkpointing_enable()
+    if was_training:
+        policy.train()
+    
+    print(f"[sample_traces] Restored policy to training config (gradient_checkpointing=ON, use_cache=False)")
+    
     elapsed = time.time() - start_time
     print(f"[sample_traces] Generated {len(data)} problems × {k} samples = {len(out)} traces in {elapsed:.1f}s")
     print(f"[sample_traces] Throughput: {len(out)/elapsed:.2f} traces/sec")
@@ -112,6 +136,17 @@ def greedy_eval_traces(policy, tokenizer, data: List[Dict]) -> List[str]:
     start_time = time.time()
     traces = []
     batch_size = config.GEN_BATCH_SIZE
+    
+    # CRITICAL: Switch policy to inference mode for generation
+    # Same fix as sample_traces - prevent gradient_checkpointing / use_cache mismatch
+    was_training = policy.training
+    if hasattr(policy, 'gradient_checkpointing_disable'):
+        policy.gradient_checkpointing_disable()
+    if hasattr(policy, 'config'):
+        policy.config.use_cache = True
+    policy.eval()
+    
+    print(f"[greedy_eval_traces] Switched policy to inference mode (gradient_checkpointing=OFF, use_cache=True, eval)")
     
     # Set left-padding for decoder-only generation
     original_padding_side = tokenizer.padding_side
@@ -142,6 +177,16 @@ def greedy_eval_traces(policy, tokenizer, data: List[Dict]) -> List[str]:
     
     # Restore original padding side
     tokenizer.padding_side = original_padding_side
+    
+    # Restore training config for next fine-tune phase
+    if hasattr(policy, 'config'):
+        policy.config.use_cache = False
+    if hasattr(policy, 'gradient_checkpointing_enable'):
+        policy.gradient_checkpointing_enable()
+    if was_training:
+        policy.train()
+    
+    print(f"[greedy_eval_traces] Restored policy to training config (gradient_checkpointing=ON, use_cache=False)")
     
     elapsed = time.time() - start_time
     print(f"[greedy_eval_traces] Generated {len(data)} greedy traces in {elapsed:.1f}s")

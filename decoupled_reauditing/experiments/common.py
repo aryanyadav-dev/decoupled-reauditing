@@ -276,37 +276,53 @@ def run_sampling_and_filtering(policy, tokenizer, train_data, eval_data, mode, t
         sys.exit(0)
     
     # Sample traces and build contexts
+    print(f"\n[Generation {t}] === SAMPLING PHASE ===")
     samples = sample_traces(policy, tokenizer, train_data, config.K_SAMPLES)
     contexts = build_contexts(samples)
+    print(f"[Generation {t}] Sampled {len(samples)} traces from {len(train_data)} problems")
     
     # Run filtering based on mode (no judge needed)
+    print(f"[Generation {t}] === FILTERING PHASE (mode={mode}) ===")
     if mode == "naive":
         v_filt = pool[0]
         v_audit = None
+        print(f"[filter] Scoring {len(samples)} traces with {v_filt.__class__.__name__}")
         accepted = accept_set(samples, v_filt, contexts)
         clean = accepted
+        print(f"[filter] Accepted {len(accepted)} traces (no re-audit)")
     elif mode == "method":
+        print(f"[filter] Running decoupled re-audit with rotation and re-auditing")
         v_filt, v_audit, accepted, clean = decoupled_reaudit(samples, pool, t, contexts)
+        print(f"[filter] Filter accepted {len(accepted)} traces")
+        print(f"[re-audit] Re-audited with {v_audit.__class__.__name__}, clean set: {len(clean)} traces")
     elif mode == "rotation_only":
         v_filt, _ = rotation_pair(pool, t)
         v_audit = None
+        print(f"[filter] Rotation-only: scoring {len(samples)} traces with {v_filt.__class__.__name__}")
         accepted = accept_set(samples, v_filt, contexts)
         clean = accepted
+        print(f"[filter] Accepted {len(accepted)} traces (no re-audit)")
     elif mode == "reaudit_only":
         v_filt, v_audit = pool[0], pool[1]
+        print(f"[filter] Re-audit-only: scoring {len(samples)} traces with {v_filt.__class__.__name__}")
         accepted = accept_set(samples, v_filt, contexts)
+        print(f"[re-audit] Re-auditing {len(accepted)} traces with {v_audit.__class__.__name__}")
         clean = reaudit_set(accepted, v_audit, contexts)
+        print(f"[re-audit] Clean set: {len(clean)} traces")
     else:
         raise ValueError(f"Unknown mode: {mode}")
     
     # Generate eval traces
+    print(f"[Generation {t}] === EVALUATION GENERATION ===")
     eval_traces = greedy_eval_traces(policy, tokenizer, eval_data)
+    print(f"[Generation {t}] Generated {len(eval_traces)} eval traces")
     
     # Checkpoint clean set (without metrics yet - those need judge)
     ckpt_rows = [{"kind": "clean", **x} for x in clean]
     checkpoint_jsonl(Path("results") / f"_ckpt_{exp_name}_gen{t}_partial.jsonl", ckpt_rows)
     
     # Fine-tune if we have clean data
+    print(f"[Generation {t}] === FINE-TUNING PHASE ===")
     if clean:
         policy = finetune_policy(policy, tokenizer, clean, str(Path("results") / f"adapter_{exp_name}_gen{t}"))
     else:

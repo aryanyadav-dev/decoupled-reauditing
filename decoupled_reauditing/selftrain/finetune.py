@@ -54,6 +54,16 @@ def finetune_policy(policy, tokenizer, clean_set: List[Dict], output_dir: str):
         )
         print(f"[finetune_policy] LoRA config prepared: r={config.LORA_R}, alpha={config.LORA_ALPHA}")
     
+    # CRITICAL: Ensure policy is in training config before fine-tuning
+    # SFTTrainer expects: gradient_checkpointing enabled, use_cache=False, train mode
+    # This prevents KV-cache issues when switching between training and inference
+    if hasattr(policy, 'gradient_checkpointing_enable'):
+        policy.gradient_checkpointing_enable()
+    if hasattr(policy, 'config'):
+        policy.config.use_cache = False
+    policy.train()
+    print(f"[finetune_policy] Policy prepared for training (gradient_checkpointing=ON, use_cache=False, train)")
+    
     # Convert clean_set to HuggingFace Dataset with proper format
     # Each item needs a "text" column containing the full training string
     formatted_data = []
