@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 research.tex
+diagrams/
 
 decoupled_reauditing/**/__pycache__/
 decoupled_reauditing/results/*
