@@ -214,30 +214,44 @@ def run_real_experiment(mode, exp_name, csv_name):
             policy, tokenizer, train, eval_, mode, t, pool, exp_name, start
         )
         
-        # PHASE 2: SCORING - Free llm-judge, load Math-Shepherd judge
+        # PHASE 2: SCORING
+        # Sub-phase 2a: compute reported accuracy (uses v_filt = llm-judge verifier)
+        # MUST happen while llm-judge model is still loaded; freeing it first would
+        # set its inner .model to None and cause "NoneType is not callable" in generate().
         print(f"\n[run_real_experiment] PHASE 2: SCORING")
-        print(f"[run_real_experiment] Freeing llm-judge to make room for Math-Shepherd judge...")
-        
-        # Free llm-judge from GPU 1
+        print(f"[run_real_experiment] Sub-phase 2a: computing reported accuracy (llm-judge still live)...")
+        from decoupled_reauditing.metrics import compute_reported_acc, compute_contamination, compute_true_acc
+        reported = compute_reported_acc(eval_, eval_traces, v_filt, contexts)
+        print(f"[run_real_experiment] reported_acc={reported:.4f}")
+
+        # Sub-phase 2b: free llm-judge, then load Math-Shepherd judge for true accuracy
+        print(f"[run_real_experiment] Sub-phase 2b: freeing llm-judge, loading Math-Shepherd judge...")
         free_model_from_gpu(llm, "llm-judge model")
         free_model_from_gpu(llm_tok, "llm-judge tokenizer")
         del pool
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        
+
         print(f"[run_real_experiment] Memory after freeing llm-judge (GPU 1 now empty):")
         log_gpu_memory()
-        
-        # Now load Math-Shepherd judge on the freed GPU 1
+
+        # Load Math-Shepherd judge on the freed GPU slot
         judge = create_temporary_judge(device_index=judge_device)
-        
-        # Compute metrics with the judge
-        from decoupled_reauditing.metrics import generation_metrics
-        metrics = generation_metrics(eval_, eval_traces, v_filt, clean, judge, contexts)
-        
+
+        true_acc = compute_true_acc(eval_, eval_traces, judge)
+        contam = compute_contamination(clean)
+        print(f"[run_real_experiment] true_acc={true_acc:.4f}, contamination={contam:.4f}")
+
         # Free the judge immediately after scoring
         cleanup_judge(judge)
+
+        metrics = {
+            "reported": reported,
+            "true": true_acc,
+            "gap": reported - true_acc,
+            "contam": contam,
+        }
         
         # Add generation metadata to metrics
         metrics.update({
