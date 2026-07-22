@@ -1,7 +1,7 @@
 from typing import Dict, List
 
 from datasets import Dataset
-from peft import LoraConfig, TaskType, prepare_model_for_kbit_training
+from peft import LoraConfig, PeftModel, TaskType, prepare_model_for_kbit_training
 from trl import SFTTrainer, SFTConfig
 import trl
 
@@ -33,7 +33,7 @@ def finetune_policy(policy, tokenizer, clean_set: List[Dict], output_dir: str):
         return policy
     
     # Check if model already has LoRA adapter (from previous generation)
-    is_peft_model = getattr(policy, "is_peft_model", False)
+    is_peft_model = isinstance(policy, PeftModel)
     
     if is_peft_model:
         print(f"[finetune_policy] Model is already a PeftModel (generation t>0); continuing training on existing adapter")
